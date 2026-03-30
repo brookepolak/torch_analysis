@@ -55,7 +55,7 @@ def gas_virial_ratio_container(container):
     gas_gas_gpot = container[('flash','gpot')]
     Epot = dens*gas_gas_gpot.v
 
-    alpha = sum(Ekin.v)/sum(Epot.v)
+    alpha = abs(sum(Ekin.v)/sum(Epot.v))
 
     return alpha
 
@@ -110,6 +110,8 @@ def particle_mass_container(ds, particle_type="all"):
     float
         Total mass in Msun.
     """
+    if not ds.particles_exist:
+        return []
 
     ad = ds.all_data()
 
@@ -130,7 +132,7 @@ def particle_mass_container(ds, particle_type="all"):
     if mask.sum() == 0:
         return 0.0
 
-    return pm[mask].sum()
+    return pm[mask]
 
 # -----------------------------
 # ROI-specific quantity functions
@@ -166,28 +168,34 @@ def sink_mass(ds):
     if not ds.particles_exist:
         return 0.0
     else:
-        return particle_mass_container(ds, particle_type="sinks")
+        return particle_mass_container(ds, particle_type="sinks").sum()
 
 def stellar_mass(ds):
     if not ds.particles_exist:
         return 0.0
     else:
-        return particle_mass_container(ds, particle_type="stars")
+        return particle_mass_container(ds, particle_type="stars").sum()
 
 def max_star_mass(ds):
-    return max(stellar_mass(ds))
+    sm = particle_mass_container(ds, particle_type="stars")
+    return max(sm, default=0)
 
 def number_stars(ds):
-    return len(stellar_mass(ds))
+    sm = particle_mass_container(ds, particle_type="stars")
+    return len(sm)
 
 def number_feedback_stars(ds):
+    from amuse.units import units
     from torch_user import user_parameters
     p = user_parameters()
-    star_mass = stellar_mass(ds)
-    return len(star_mass[star_mass >= p['min_feedback_mass']])
+    sm = np.asarray(particle_mass_container(ds, particle_type="stars"))
+    return len(sm[sm >= p['min_feedback_mass'].value_in(units.MSun)])
 
 def number_sinks(ds):
-    return len(sink_mass(ds))
+    sm = sink_mass(ds)
+    if sm == 0.0:
+        return 0
+    return len(sm(ds))
 
 def sfe(ds):
     ms = stellar_mass(ds)
@@ -200,7 +208,8 @@ def sfr(ds, prev_values):
         return np.nan
 
     prev_time, prev_star_mass = prev_values
-    dm = stellar_mass(ds) - prev_star_mass
+    sm = stellar_mass(ds)
+    dm = sm - prev_star_mass
     dt = (ds.current_time.in_units('Myr').v - prev_time)*1e6 # Myr to yr
 
     return dm/dt
@@ -224,6 +233,8 @@ def half_mass_radius(ds):
     """
     Compute half-mass radius of the star cluster.
     """
+    if not ds.particles_exist:
+        return 0.0
 
     ad = ds.all_data()
 
@@ -254,11 +265,36 @@ def half_mass_radius(ds):
     hmr = np.sqrt(r2_sort[idx_hmr])
     return hmr
 
+def stellar_virial_ratio(ds):
+    if not ds.particles_exist:
+        return 0.0
+
+    ad = ds.all_data()
+
+    stars = ad[("all", "particle_csgm")].value == 0.0 # star marker
+
+    pos = np.array([ad['all','particle_posx'][stars].v,
+                               ad['all','particle_posy'][stars].v,
+                               ad['all','particle_posz'][stars].v]).T
+
+    m  = ad['all','particle_mass'][stars].v
+    vx = ad['all','particle_velx'][stars].v
+    vy = ad['all','particle_vely'][stars].v
+    vz = ad['all','particle_velz'][stars].v
+    v2 = vx**2 + vy**2 + vz**2
+
+    Ekin = 0.5*m*v2
+    Epot = m*ds.find_field_values_at_points('bgpt', pos*yt.units.cm).v
+
+    return abs(sum(Ekin)/sum(Epot))
+
 def unbound_star_ids(ds):
     """
     Returns the FLASH particle IDs of stars unbound to the system. 
     Expensive calculation (O(n^2)) due to the particle-particle potential calculation.
     """
+    if not ds.particles_exist:
+        return []
     from amuse.lab import Particles
     from amuse.units import units
 
@@ -274,14 +310,18 @@ def unbound_star_ids(ds):
                                     ad['all','particle_velz'][star_idx].v]).T
     # Potential field of gas+sinks at star positions
     gas_star_gpot   = mass*ds.find_field_values_at_points('gpot',pos*yt.units.cm).v
+    # Potential field of stars at star positions
+    star_star_gpot = mass*ds.find_field_values_at_points('bgpt', pos*yt.units.cm).v
 
-    stars = Particles(len(mass))
-    stars.mass     = mass | units.g
-    stars.position = pos | units.cm
-    stars.velocity = vel | units.cm/units.s
+    # TODO: implement user option to use exact potential (sloooow) or grid potential (fast)
+    if False:
+        stars = Particles(len(mass))
+        stars.mass     = mass | units.g
+        stars.position = pos | units.cm
+        stars.velocity = vel | units.cm/units.s
 
-    # Potential field of stars 
-    star_star_gpot = (stars.mass*stars.potential()).value_in(units.erg)
+        # Potential field of stars 
+        star_star_gpot = (stars.mass*stars.potential()).value_in(units.erg) 
 
     # Stellar kinetic energy
     v2 = np.linalg.norm(vel)
@@ -305,7 +345,7 @@ QUANTITY_REGISTRY = {
     "gas_virial_ratio": gas_virial_ratio,
     "stellar_mass": stellar_mass,
     "stellar_velocity_dispersion": stellar_velocity_dispersion,
-    #"stellar_virial_ratio": stellar_virial_ratio,
+    "stellar_virial_ratio": stellar_virial_ratio,
     "sink_mass": sink_mass,
     "sfe": sfe,
     "sfr": sfr,
@@ -331,7 +371,7 @@ QUANTITY_TYPE = {
     "gas_virial_ratio": 'scalar',
     "stellar_mass":  'scalar',
     "stellar_velocity_dispersion":  'scalar',
-    #"stellar_virial_ratio": 'scalar'
+    "stellar_virial_ratio": 'scalar',
     "sink_mass":  'scalar',
     "sfe":  'scalar',
     "sfr":  'scalar',
@@ -359,7 +399,7 @@ QUANTITY_LABELS = {
     "sink_mass": r"$M_\mathrm{sink}\,[M_\odot]$",
     "stellar_mass": r"$M_\star\,[M_\odot]$",
     "stellar_velocity_dispersion": r"$\sigma_v~[{\rm cm/s}]$",
-    #"stellar_virial_ratio": r"$\alpha_{\star}$",
+    "stellar_virial_ratio": r"$\alpha_{\star}$",
     "sfe": r"$\epsilon_\star$",
     "sfr": r"$\rm{SFR}\,[\rm{M_\odot~yr^{-1}}]$",
     "half_mass_radius": r"$R_{1/2}~[\rm{pc}]$",
