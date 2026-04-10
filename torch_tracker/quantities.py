@@ -229,6 +229,45 @@ def stellar_velocity_dispersion(ds):
 
     return np.std(np.sqrt(v2))
 
+def stellar_density(ds):
+    """
+    Compute half-mass stellar density of the star cluster.
+    """
+    if not ds.particles_exist:
+        return 0.0
+
+    ad = ds.all_data()
+
+    stars = ad[("all", "particle_csgm")].value == 0.0 # star marker
+
+    # Convert positions to unitless cm
+    px = ad[("all", "particle_position_x")][stars].to("pc").value
+    py = ad[("all", "particle_position_y")][stars].to("pc").value
+    pz = ad[("all", "particle_position_z")][stars].to("pc").value
+    pm = ad[("all", "particle_mass")][stars].to("Msun").value
+
+    tot_mass = np.sum(pm)
+    comx = np.sum(pm*px)/tot_mass
+    comy = np.sum(pm*py)/tot_mass
+    comz = np.sum(pm*pz)/tot_mass
+
+    r2 = abs((px-comx)**2 + (py-comy)**2 + (pz-comz)**2)
+
+    sort_r = np.argsort(r2)
+
+    m_sort = pm[sort_r]
+    r2_sort = r2[sort_r]
+
+    half_mass = tot_mass/2.0
+    cum_mass = np.cumsum(m_sort)
+    idx_hmr = np.argmax(cum_mass>half_mass)
+
+    hmr = np.sqrt(r2_sort[idx_hmr])
+
+    rho_hm = 3*half_mass/(4*np.pi*hmr**3)
+
+    return rho_hm
+
 def half_mass_radius(ds):
     """
     Compute half-mass radius of the star cluster.
@@ -346,6 +385,7 @@ QUANTITY_REGISTRY = {
     "stellar_mass": stellar_mass,
     "stellar_velocity_dispersion": stellar_velocity_dispersion,
     "stellar_virial_ratio": stellar_virial_ratio,
+    "stellar_density": stellar_density,
     "sink_mass": sink_mass,
     "sfe": sfe,
     "sfr": sfr,
@@ -372,6 +412,7 @@ QUANTITY_TYPE = {
     "stellar_mass":  'scalar',
     "stellar_velocity_dispersion":  'scalar',
     "stellar_virial_ratio": 'scalar',
+    "stellar_density": 'scalar',
     "sink_mass":  'scalar',
     "sfe":  'scalar',
     "sfr":  'scalar',
@@ -400,6 +441,7 @@ QUANTITY_LABELS = {
     "stellar_mass": r"$M_\star\,[M_\odot]$",
     "stellar_velocity_dispersion": r"$\sigma_v~[{\rm cm/s}]$",
     "stellar_virial_ratio": r"$\alpha_{\star}$",
+    "stellar_density": r"$\rho_{\rm hm,\star}~[\rm M_\odot~pc^{-3}]$",
     "sfe": r"$\epsilon_\star$",
     "sfr": r"$\rm{SFR}\,[\rm{M_\odot~yr^{-1}}]$",
     "half_mass_radius": r"$R_{1/2}~[\rm{pc}]$",
