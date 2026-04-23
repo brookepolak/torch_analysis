@@ -1,6 +1,16 @@
 import yt
 import numpy as np
 
+# Initialize quantity dictionaries
+QUANTITY_REGISTRY = {}
+QUANTITY_TYPE = {}
+QUANTITY_LABELS = {}
+QUANTITY_REQUISITES = {}
+
+# =============================================================================
+# Helper functions
+# =============================================================================
+
 def get_roi_region(ds, parfile="flash.par"):
     """
     Return yt region corresponding to derefinement ROI.
@@ -34,6 +44,7 @@ def get_roi_region(ds, parfile="flash.par"):
         right_edge=right_edge,
     )
 
+
 def gas_mass_container(container):
     return (
         container[("gas", "mass")]
@@ -58,6 +69,7 @@ def gas_virial_ratio_container(container):
     alpha = abs(sum(Ekin.v)/sum(Epot.v))
 
     return alpha
+
 
 def bound_gas_mass_fraction_container(container):
     mass = container[('gas','mass')]
@@ -90,6 +102,7 @@ def bound_gas_mass_fraction_container(container):
     bmf = sum(mass[bound_idx])/sum(mass)
 
     return bmf
+
 
 def particle_mass_container(ds, particle_type="all"):
     """
@@ -134,35 +147,100 @@ def particle_mass_container(ds, particle_type="all"):
 
     return pm[mask]
 
-# -----------------------------
-# ROI-specific quantity functions
-# -----------------------------
-def gas_mass_roi(ds):
-    region = get_roi_region(ds)
-    return gas_mass_container(region)
 
-def bound_gas_mass_fraction_roi(ds):
-    region = get_roi_region(ds)
-    return bound_gas_mass_fraction_container(region)
-
-def gas_virial_ratio_roi(ds):
-    region = get_roi_region(ds)
-    return gas_virial_ratio_container(region)
-
-def sfe_roi(ds):
-    region = get_roi_region(ds)
-    mstars = stellar_mass(ds)
-    mgas = gas_mass_roi(ds)
-    return mstars / mgas if mgas > 0.0 else 0.0
+# =============================================================================
+# Global quantities
+# =============================================================================
 
 def gas_mass(ds):
     return gas_mass_container(ds.all_data())
 
-def bound_gas_mass_fraction(ds):
-    return bound_gas_mass_fraction_container(ds.all_data())
+QUANTITY_REGISTRY["gas_mass"] = gas_mass
+QUANTITY_TYPE["gas_mass"] = 'scalar'
+QUANTITY_LABELS["gas_mass"] = r"$M_\mathrm{gas}\,[M_\odot]$"
+
 
 def gas_virial_ratio(ds):
     return gas_virial_ratio_container(ds.all_data())
+
+QUANTITY_REGISTRY["gas_virial_ratio"] = gas_virial_ratio
+QUANTITY_TYPE["gas_virial_ratio"] = 'scalar'
+QUANTITY_LABELS["gas_virial_ratio"] = r"$\alpha_{\rm gas}$"
+
+
+def bound_gas_mass_fraction(ds):
+    return bound_gas_mass_fraction_container(ds.all_data())
+
+QUANTITY_REGISTRY["bound_gas_mass_fraction"] = bound_gas_mass_fraction
+QUANTITY_TYPE["bound_gas_mass_fraction"] = 'scalar'
+QUANTITY_LABELS["bound_gas_mass_fraction"] = r"$M_\mathrm{gas, bound}/M_{\rm tot}$"
+
+
+def gas_ellipticity(ds):
+    """
+    Compute gas ellipticity using inertial tensor method.
+    See: https://doi.org/10.1093/mnras/sty3531
+    Returns 1 - c/a where a, b, c are the principal axes (a >= b >= c).
+    Uses density cutoff as 1% density cutoff
+    """
+    from torch_param import FlashPar  
+    flashp = FlashPar(parfile)
+    
+    
+    ad = ds.all_data()
+    
+    # Get gas properties above a cutoff
+    rho = ad[('gas','density')].value
+    density_cut = flashp['sink_density']*0.01
+    mask = rho > density_cut
+    
+    mass = ad[('gas', 'cell_mass')][mask].to('Msun').value
+    px = ad[('gas', 'x')][mask].to('pc').value
+    py = ad[('gas', 'y')][mask].to('pc').value
+    pz = ad[('gas', 'z')][mask].to('pc').value
+    
+    if len(mass) == 0:
+        return 0.0
+    
+    # Calculate center of mass
+    total_mass = np.sum(mass)
+    com_x = np.sum(mass * px) / total_mass
+    com_y = np.sum(mass * py) / total_mass
+    com_z = np.sum(mass * pz) / total_mass
+    
+    # Relative positions
+    dx = px - com_x
+    dy = py - com_y
+    dz = pz - com_z
+    
+    # Shape tensor S_ij = sum(m * r_i * r_j) / sum(m)
+    S_xx = np.sum(mass * dx * dx) / total_mass
+    S_yy = np.sum(mass * dy * dy) / total_mass
+    S_zz = np.sum(mass * dz * dz) / total_mass
+    S_xy = np.sum(mass * dx * dy) / total_mass
+    S_xz = np.sum(mass * dx * dz) / total_mass
+    S_yz = np.sum(mass * dy * dz) / total_mass
+
+    I = np.array([[S_xx, S_xy, S_xz],
+                [S_xy, S_yy, S_yz],
+                [S_xz, S_yz, S_zz]])
+    
+    # Get eigenvalues (proportional to a^2, b^2, c^2)
+    eigenvalues = np.linalg.eigvalsh(I)
+    eigenvalues = np.sort(eigenvalues)[::-1]  # Sort descending: a >= b >= c
+    
+    # Calculate ellipticity (1 - c/a)
+    if eigenvalues[0] > 0:
+        ellipticity = 1.0 - np.sqrt(eigenvalues[2] / eigenvalues[0])
+    else:
+        ellipticity = 0.0
+    
+    return ellipticity
+
+QUANTITY_REGISTRY["gas_ellipticity"] = gas_ellipticity
+QUANTITY_TYPE["gas_ellipticity"] = 'scalar'
+QUANTITY_LABELS["gas_ellipticity"] = r"$e_{\rm gas}$"
+
 
 def sink_mass(ds):
     if not ds.particles_exist:
@@ -170,49 +248,21 @@ def sink_mass(ds):
     else:
         return particle_mass_container(ds, particle_type="sinks").sum()
 
+QUANTITY_REGISTRY["sink_mass"] = sink_mass
+QUANTITY_TYPE["sink_mass"] = 'scalar'
+QUANTITY_LABELS["sink_mass"] = r"$M_\mathrm{sink}\,[M_\odot]$"
+
+
 def stellar_mass(ds):
     if not ds.particles_exist:
         return 0.0
     else:
         return particle_mass_container(ds, particle_type="stars").sum()
 
-def max_star_mass(ds):
-    sm = particle_mass_container(ds, particle_type="stars")
-    return max(sm, default=0)
+QUANTITY_REGISTRY["stellar_mass"] = stellar_mass
+QUANTITY_TYPE["stellar_mass"] = 'scalar'
+QUANTITY_LABELS["stellar_mass"] = r"$M_\star\,[M_\odot]$"
 
-def number_stars(ds):
-    sm = particle_mass_container(ds, particle_type="stars")
-    return len(sm)
-
-def number_feedback_stars(ds):
-    from amuse.units import units
-    from torch_user import user_parameters
-    p = user_parameters()
-    sm = np.asarray(particle_mass_container(ds, particle_type="stars"))
-    return len(sm[sm >= p['min_feedback_mass'].value_in(units.MSun)])
-
-def number_sinks(ds):
-    sm = sink_mass(ds)
-    if sm == 0.0:
-        return 0
-    return len(sm(ds))
-
-def sfe(ds):
-    ms = stellar_mass(ds)
-    mg = gas_mass(ds)
-    return ms / mg if mg > 0 else 0.0
-
-def sfr(ds, prev_values):
-    if prev_values == None:
-        # there are no previous values; return nan
-        return np.nan
-
-    prev_time, prev_star_mass = prev_values
-    sm = stellar_mass(ds)
-    dm = sm - prev_star_mass
-    dt = (ds.current_time.in_units('Myr').v - prev_time)*1e6 # Myr to yr
-
-    return dm/dt
 
 def stellar_velocity_dispersion(ds):
     if not ds.particles_exist:
@@ -228,6 +278,39 @@ def stellar_velocity_dispersion(ds):
     v2 = vx**2 + vy**2 + vz**2
 
     return np.std(np.sqrt(v2))
+
+QUANTITY_REGISTRY["stellar_velocity_dispersion"] = stellar_velocity_dispersion
+QUANTITY_TYPE["stellar_velocity_dispersion"] = 'scalar'
+QUANTITY_LABELS["stellar_velocity_dispersion"] = r"$\sigma_v~[{\rm cm/s}]$"
+
+
+def stellar_virial_ratio(ds):
+    if not ds.particles_exist:
+        return 0.0
+
+    ad = ds.all_data()
+
+    stars = ad[("all", "particle_csgm")].value == 0.0 # star marker
+
+    pos = np.array([ad['all','particle_posx'][stars].v,
+                               ad['all','particle_posy'][stars].v,
+                               ad['all','particle_posz'][stars].v]).T
+
+    m  = ad['all','particle_mass'][stars].v
+    vx = ad['all','particle_velx'][stars].v
+    vy = ad['all','particle_vely'][stars].v
+    vz = ad['all','particle_velz'][stars].v
+    v2 = vx**2 + vy**2 + vz**2
+
+    Ekin = 0.5*m*v2
+    Epot = m*ds.find_field_values_at_points('bgpt', pos*yt.units.cm).v
+
+    return abs(sum(Ekin)/sum(Epot))
+
+QUANTITY_REGISTRY["stellar_virial_ratio"] = stellar_virial_ratio
+QUANTITY_TYPE["stellar_virial_ratio"] = 'scalar'
+QUANTITY_LABELS["stellar_virial_ratio"] = r"$\alpha_{\star}$"
+
 
 def stellar_density(ds):
     """
@@ -268,6 +351,72 @@ def stellar_density(ds):
 
     return rho_hm
 
+QUANTITY_REGISTRY["stellar_density"] = stellar_density
+QUANTITY_TYPE["stellar_density"] = 'scalar'
+QUANTITY_LABELS["stellar_density"] = r"$\rho_{\rm hm,\star}~[\rm M_\odot~pc^{-3}]$"
+
+
+def stellar_ellipticity(ds):
+    """
+    Compute stellar ellipticity using inertial tensor method.
+    Returns 1 - c/a where a, b, c are the principal axes (a >= b >= c).
+    """
+    if not ds.particles_exist:
+        return 0.0
+    
+    ad = ds.all_data()
+    
+    stars = ad[("all", "particle_csgm")].value == 0.0
+    
+    if stars.sum() == 0:
+        return 0.0
+    
+    # Get star properties
+    mass = ad[('all', 'particle_mass')][stars].to('Msun').value
+    px = ad[('all', 'particle_position_x')][stars].to('pc').value
+    py = ad[('all', 'particle_position_y')][stars].to('pc').value
+    pz = ad[('all', 'particle_position_z')][stars].to('pc').value
+    
+    # Calculate center of mass
+    total_mass = np.sum(mass)
+    com_x = np.sum(mass * px) / total_mass
+    com_y = np.sum(mass * py) / total_mass
+    com_z = np.sum(mass * pz) / total_mass
+    
+    # Relative positions
+    dx = px - com_x
+    dy = py - com_y
+    dz = pz - com_z
+    
+    # Shape tensor S_ij = sum(m * r_i * r_j) / sum(m)
+    S_xx = np.sum(mass * dx * dx) / total_mass
+    S_yy = np.sum(mass * dy * dy) / total_mass
+    S_zz = np.sum(mass * dz * dz) / total_mass
+    S_xy = np.sum(mass * dx * dy) / total_mass
+    S_xz = np.sum(mass * dx * dz) / total_mass
+    S_yz = np.sum(mass * dy * dz) / total_mass
+
+    I = np.array([[S_xx, S_xy, S_xz],
+                [S_xy, S_yy, S_yz],
+                [S_xz, S_yz, S_zz]])
+    
+    # Get eigenvalues (proportional to a^2, b^2, c^2)
+    eigenvalues = np.linalg.eigvalsh(I)
+    eigenvalues = np.sort(eigenvalues)[::-1]  # Sort descending: a >= b >= c
+    
+    # Calculate ellipticity (1 - c/a)
+    if eigenvalues[0] > 0:
+        ellipticity = 1.0 - np.sqrt(eigenvalues[2] / eigenvalues[0])
+    else:
+        ellipticity = 0.0
+    
+    return ellipticity
+
+QUANTITY_REGISTRY["stellar_ellipticity"] = stellar_ellipticity
+QUANTITY_TYPE["stellar_ellipticity"] = 'scalar'
+QUANTITY_LABELS["stellar_ellipticity"] = r"$e_{\star}$"
+
+
 def half_mass_radius(ds):
     """
     Compute half-mass radius of the star cluster.
@@ -304,28 +453,79 @@ def half_mass_radius(ds):
     hmr = np.sqrt(r2_sort[idx_hmr])
     return hmr
 
-def stellar_virial_ratio(ds):
-    if not ds.particles_exist:
-        return 0.0
+QUANTITY_REGISTRY["half_mass_radius"] = half_mass_radius
+QUANTITY_TYPE["half_mass_radius"] = 'scalar'
+QUANTITY_LABELS["half_mass_radius"] = r"$R_{1/2}~[\rm{pc}]$"
 
-    ad = ds.all_data()
 
-    stars = ad[("all", "particle_csgm")].value == 0.0 # star marker
+def sfe(ds):
+    ms = stellar_mass(ds)
+    mg = gas_mass(ds)
+    return ms / mg if mg > 0 else 0.0
 
-    pos = np.array([ad['all','particle_posx'][stars].v,
-                               ad['all','particle_posy'][stars].v,
-                               ad['all','particle_posz'][stars].v]).T
+QUANTITY_REGISTRY["sfe"] = sfe
+QUANTITY_TYPE["sfe"] = 'scalar'
+QUANTITY_LABELS["sfe"] = r"$\epsilon_\star$"
 
-    m  = ad['all','particle_mass'][stars].v
-    vx = ad['all','particle_velx'][stars].v
-    vy = ad['all','particle_vely'][stars].v
-    vz = ad['all','particle_velz'][stars].v
-    v2 = vx**2 + vy**2 + vz**2
 
-    Ekin = 0.5*m*v2
-    Epot = m*ds.find_field_values_at_points('bgpt', pos*yt.units.cm).v
+def sfr(ds, prev_values):
+    if prev_values == None:
+        # there are no previous values; return nan
+        return np.nan
 
-    return abs(sum(Ekin)/sum(Epot))
+    prev_time, prev_star_mass = prev_values
+    sm = stellar_mass(ds)
+    dm = sm - prev_star_mass
+    dt = (ds.current_time.in_units('Myr').v - prev_time)*1e6 # Myr to yr
+
+    return dm/dt
+
+QUANTITY_REGISTRY["sfr"] = sfr
+QUANTITY_TYPE["sfr"] = 'scalar'
+QUANTITY_LABELS["sfr"] = r"$\rm{SFR}\,[\rm{M_\odot~yr^{-1}}]$"
+QUANTITY_REQUISITES["sfr"] = ["time", "stellar_mass"]
+
+
+def number_stars(ds):
+    sm = particle_mass_container(ds, particle_type="stars")
+    return len(sm)
+
+QUANTITY_REGISTRY["number_stars"] = number_stars
+QUANTITY_TYPE["number_stars"] = 'scalar'
+QUANTITY_LABELS["number_stars"] = r"$N_\star$"
+
+
+def number_feedback_stars(ds):
+    from amuse.units import units
+    from torch_user import user_parameters
+    p = user_parameters()
+    sm = np.asarray(particle_mass_container(ds, particle_type="stars"))
+    return len(sm[sm >= p['min_feedback_mass'].value_in(units.MSun)])
+
+QUANTITY_REGISTRY["number_feedback_stars"] = number_feedback_stars
+QUANTITY_TYPE["number_feedback_stars"] = 'scalar'
+QUANTITY_LABELS["number_feedback_stars"] = r"$N_{\rm fb}$"
+
+
+def number_sinks(ds):
+    sm = sink_mass(ds)
+    if sm == 0.0:
+        return 0
+    return len(sm(ds))
+
+QUANTITY_REGISTRY["number_sinks"] = number_sinks
+QUANTITY_TYPE["number_sinks"] = 'scalar'
+QUANTITY_LABELS["number_sinks"] = r"$N_{\rm sink}$"
+
+
+def max_star_mass(ds):
+    sm = particle_mass_container(ds, particle_type="stars")
+    return max(sm, default=0)
+
+QUANTITY_REGISTRY["max_star_mass"] = max_star_mass
+QUANTITY_TYPE["max_star_mass"] = 'scalar'
+QUANTITY_LABELS["max_star_mass"] = r"$M_{\star,\rm max}\,[M_\odot]$"
+
 
 def unbound_star_ids(ds):
     """
@@ -378,91 +578,47 @@ def unbound_star_ids(ds):
 
     return runaways
 
-QUANTITY_REGISTRY = {
-    # Global
-    "gas_mass": gas_mass,
-    "gas_virial_ratio": gas_virial_ratio,
-    "stellar_mass": stellar_mass,
-    "stellar_velocity_dispersion": stellar_velocity_dispersion,
-    "stellar_virial_ratio": stellar_virial_ratio,
-    "stellar_density": stellar_density,
-    "sink_mass": sink_mass,
-    "sfe": sfe,
-    "sfr": sfr,
-    "half_mass_radius": half_mass_radius,
-    "number_stars": number_stars,
-    "number_sinks": number_sinks,
-    "number_feedback_stars": number_feedback_stars,
-    "max_star_mass": max_star_mass,
-    "unbound_star_ids": unbound_star_ids,
-    "bound_gas_mass_fraction": bound_gas_mass_fraction,
+QUANTITY_REGISTRY["unbound_star_ids"] = unbound_star_ids
+QUANTITY_TYPE["unbound_star_ids"] = 'vector'
 
-    # ROI
-    "gas_mass_roi": gas_mass_roi,
-    "gas_virial_ratio_roi": gas_virial_ratio_roi,
-    "bound_gas_mass_fraction_roi": bound_gas_mass_fraction_roi,
-    "sfe_roi": sfe_roi,
-}
 
-# Is the quantity scalar or vector? hdf5 needs to know
-QUANTITY_TYPE = {
-    # Global
-    "gas_mass": 'scalar',
-    "gas_virial_ratio": 'scalar',
-    "stellar_mass":  'scalar',
-    "stellar_velocity_dispersion":  'scalar',
-    "stellar_virial_ratio": 'scalar',
-    "stellar_density": 'scalar',
-    "sink_mass":  'scalar',
-    "sfe":  'scalar',
-    "sfr":  'scalar',
-    "half_mass_radius":  'scalar',
-    "number_stars":  'scalar',
-    "number_sinks":  'scalar',
-    "number_feedback_stars": 'scalar',
-    "max_star_mass":  'scalar',
-    "unbound_star_ids":  'vector',
-    "bound_gas_mass_fraction":  'scalar',
+# =============================================================================
+# ROI-specific quantities
+# =============================================================================
 
-    # ROI
-    "gas_mass_roi":  'scalar',
-    "gas_virial_ratio_roi": 'scalar',
-    "bound_gas_mass_fraction_roi":  'scalar',
-    "sfe_roi":  'scalar'
-}
+def gas_mass_roi(ds):
+    region = get_roi_region(ds)
+    return gas_mass_container(region)
 
-# -----------------------------
-# Dictionary of nice plot labels
-# -----------------------------
-QUANTITY_LABELS = {
-    "gas_mass": r"$M_\mathrm{gas}\,[M_\odot]$",
-    "gas_virial_ratio": r"$\alpha_{\rm gas}$",
-    "sink_mass": r"$M_\mathrm{sink}\,[M_\odot]$",
-    "stellar_mass": r"$M_\star\,[M_\odot]$",
-    "stellar_velocity_dispersion": r"$\sigma_v~[{\rm cm/s}]$",
-    "stellar_virial_ratio": r"$\alpha_{\star}$",
-    "stellar_density": r"$\rho_{\rm hm,\star}~[\rm M_\odot~pc^{-3}]$",
-    "sfe": r"$\epsilon_\star$",
-    "sfr": r"$\rm{SFR}\,[\rm{M_\odot~yr^{-1}}]$",
-    "half_mass_radius": r"$R_{1/2}~[\rm{pc}]$",
-    "number_stars": r"$N_\star$",
-    "number_sinks": r"$N_{\rm sink}$",
-    "number_feedback_stars": r"$N_{\rm fb}$",
-    "max_star_mass": r"$M_{\star,\rm max}\,[M_\odot]$",
-    "bound_gas_mass_fraction": r"$M_\mathrm{gas, bound}/M_{\rm tot}$",
-    
+QUANTITY_REGISTRY["gas_mass_roi"] = gas_mass_roi
+QUANTITY_TYPE["gas_mass_roi"] = 'scalar'
+QUANTITY_LABELS["gas_mass_roi"] = r"$M_\mathrm{gas, ROI}\,[M_\odot]$"
 
-    "gas_mass_roi": r"$M_\mathrm{gas, ROI}\,[M_\odot]$",
-    "gas_virial_ratio_roi": r"$\alpha_{\rm gas}$",
-    "bound_gas_mass_fraction_roi": r"$M_\mathrm{gas, bound}/M_{\rm tot}$",
-    "sfe_roi": r"$\epsilon_{\star,\ \mathrm{ROI}}$",
-}
 
-# Storing a list of quantity names from the hdf5 file
-# that a quantity function needs from a previous timestep. 
-# the only current such quantity is SFR, which needs the 
-# time and stellar mass of the previous snapshot
-QUANTITY_REQUISITES = {
-    "sfr": ["time","stellar_mass"]
-        }
+def gas_virial_ratio_roi(ds):
+    region = get_roi_region(ds)
+    return gas_virial_ratio_container(region)
 
+QUANTITY_REGISTRY["gas_virial_ratio_roi"] = gas_virial_ratio_roi
+QUANTITY_TYPE["gas_virial_ratio_roi"] = 'scalar'
+QUANTITY_LABELS["gas_virial_ratio_roi"] = r"$\alpha_{\rm gas}$"
+
+
+def bound_gas_mass_fraction_roi(ds):
+    region = get_roi_region(ds)
+    return bound_gas_mass_fraction_container(region)
+
+QUANTITY_REGISTRY["bound_gas_mass_fraction_roi"] = bound_gas_mass_fraction_roi
+QUANTITY_TYPE["bound_gas_mass_fraction_roi"] = 'scalar'
+QUANTITY_LABELS["bound_gas_mass_fraction_roi"] = r"$M_\mathrm{gas, bound}/M_{\rm tot}$"
+
+
+def sfe_roi(ds):
+    region = get_roi_region(ds)
+    mstars = stellar_mass(ds)
+    mgas = gas_mass_roi(ds)
+    return mstars / mgas if mgas > 0.0 else 0.0
+
+QUANTITY_REGISTRY["sfe_roi"] = sfe_roi
+QUANTITY_TYPE["sfe_roi"] = 'scalar'
+QUANTITY_LABELS["sfe_roi"] = r"$\epsilon_{\star,\ \mathrm{ROI}}$"
