@@ -37,6 +37,7 @@ tracker.update()
 
 If you want to add a new quantity later, simply add it to the list. The next update will process all snapshots for that quantity. If you want to add your own quantities to track, add them to ```torch_tracker/quantities.py```. The ```update()``` function also allows you to specify a beginning, end, and step size for processing snapshots with ```start_snapshot,last_snapshot,step```.
 
+If you change a quantity calculation and need to recalculate all values for that quantity in your analysis file, simply call ```tracker.clear(quantities)``` where the input is a list of the quantities you want to reset. Then call update as usual. Just make sure to get rid of this line the next time you call your analysis script!
 
 # Reading data
 

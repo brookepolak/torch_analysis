@@ -180,7 +180,7 @@ def gas_ellipticity(ds, parfile="flash.par"):
     """
     Compute gas ellipticity using inertial tensor method.
     See: https://doi.org/10.1093/mnras/sty3531
-    Returns 1 - c/a where a, b, c are the principal axes (a >= b >= c).
+    Returns c/a where a, b, c are the principal axes (a >= b >= c).
     Uses density cutoff as 1% density cutoff
     """
     ad = ds.all_data()
@@ -208,14 +208,26 @@ def gas_ellipticity(ds, parfile="flash.par"):
     dx = px - com_x
     dy = py - com_y
     dz = pz - com_z
+   
+    # Calculate squared distance for normalization
+    r2 = dx**2 + dy**2 + dz**2
     
+    # Avoid division by zero for particles exactly at the CoM
+    # We replace 0 with a very small number or mask it
+    r2 = np.maximum(r2, 1e-10) 
+
+    # Reduced Shape tensor S_ij = sum(m * r_i * r_j / r^2) / sum(m)
+    # The sum(m) denominator is technically optional for eigenvalues ratios, 
+    # but good for keeping values normalized.
+    weight = mass / r2
+
     # Shape tensor S_ij = sum(m * r_i * r_j) / sum(m)
-    S_xx = np.sum(mass * dx * dx) / total_mass
-    S_yy = np.sum(mass * dy * dy) / total_mass
-    S_zz = np.sum(mass * dz * dz) / total_mass
-    S_xy = np.sum(mass * dx * dy) / total_mass
-    S_xz = np.sum(mass * dx * dz) / total_mass
-    S_yz = np.sum(mass * dy * dz) / total_mass
+    S_xx = np.sum(weight * dx * dx) / total_mass
+    S_yy = np.sum(weight * dy * dy) / total_mass
+    S_zz = np.sum(weight * dz * dz) / total_mass
+    S_xy = np.sum(weight * dx * dy) / total_mass
+    S_xz = np.sum(weight * dx * dz) / total_mass
+    S_yz = np.sum(weight * dy * dz) / total_mass
 
     I = np.array([[S_xx, S_xy, S_xz],
                 [S_xy, S_yy, S_yz],
@@ -355,7 +367,7 @@ QUANTITY_LABELS["stellar_density"] = r"$\rho_{\rm hm,\star}~[\rm M_\odot~pc^{-3}
 def stellar_ellipticity(ds):
     """
     Compute stellar ellipticity using inertial tensor method.
-    Returns 1 - c/a where a, b, c are the principal axes (a >= b >= c).
+    Returns c/a where a, b, c are the principal axes (a >= b >= c).
     """
     if not ds.particles_exist:
         return 0.0
@@ -383,14 +395,26 @@ def stellar_ellipticity(ds):
     dx = px - com_x
     dy = py - com_y
     dz = pz - com_z
+   
+   # Calculate squared distance for normalization
+    r2 = dx**2 + dy**2 + dz**2
     
+    # Avoid division by zero for particles exactly at the CoM
+    # We replace 0 with a very small number or mask it
+    r2 = np.maximum(r2, 1e-10) 
+
+    # Reduced Shape tensor S_ij = sum(m * r_i * r_j / r^2) / sum(m)
+    # The sum(m) denominator is technically optional for eigenvalues ratios, 
+    # but good for keeping values normalized.
+    weight = mass / r2
+
     # Shape tensor S_ij = sum(m * r_i * r_j) / sum(m)
-    S_xx = np.sum(mass * dx * dx) / total_mass
-    S_yy = np.sum(mass * dy * dy) / total_mass
-    S_zz = np.sum(mass * dz * dz) / total_mass
-    S_xy = np.sum(mass * dx * dy) / total_mass
-    S_xz = np.sum(mass * dx * dz) / total_mass
-    S_yz = np.sum(mass * dy * dz) / total_mass
+    S_xx = np.sum(weight * dx * dx) / total_mass
+    S_yy = np.sum(weight * dy * dy) / total_mass
+    S_zz = np.sum(weight * dz * dz) / total_mass
+    S_xy = np.sum(weight * dx * dy) / total_mass
+    S_xz = np.sum(weight * dx * dz) / total_mass
+    S_yz = np.sum(weight * dy * dz) / total_mass
 
     I = np.array([[S_xx, S_xy, S_xz],
                 [S_xy, S_yy, S_yz],
@@ -559,7 +583,7 @@ def unbound_star_ids(ds):
         star_star_gpot = (stars.mass*stars.potential()).value_in(units.erg) 
 
     # Stellar kinetic energy
-    v2 = np.linalg.norm(vel)
+    v2 = np.linalg.norm(vel)**2
     Ekin = 0.5*mass*v2
 
     # Total energy of stars
