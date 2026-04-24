@@ -176,22 +176,18 @@ QUANTITY_TYPE["bound_gas_mass_fraction"] = 'scalar'
 QUANTITY_LABELS["bound_gas_mass_fraction"] = r"$M_\mathrm{gas, bound}/M_{\rm tot}$"
 
 
-def gas_ellipticity(ds):
+def gas_ellipticity(ds, parfile="flash.par"):
     """
     Compute gas ellipticity using inertial tensor method.
     See: https://doi.org/10.1093/mnras/sty3531
     Returns 1 - c/a where a, b, c are the principal axes (a >= b >= c).
     Uses density cutoff as 1% density cutoff
     """
-    from torch_param import FlashPar  
-    flashp = FlashPar(parfile)
-    
-    
     ad = ds.all_data()
     
     # Get gas properties above a cutoff
     rho = ad[('gas','density')].value
-    density_cut = flashp['sink_density']*0.01
+    density_cut = 1e-20 
     mask = rho > density_cut
     
     mass = ad[('gas', 'cell_mass')][mask].to('Msun').value
@@ -229,9 +225,9 @@ def gas_ellipticity(ds):
     eigenvalues = np.linalg.eigvalsh(I)
     eigenvalues = np.sort(eigenvalues)[::-1]  # Sort descending: a >= b >= c
     
-    # Calculate ellipticity (1 - c/a)
+    # Calculate ellipticity (c/a)
     if eigenvalues[0] > 0:
-        ellipticity = 1.0 - np.sqrt(eigenvalues[2] / eigenvalues[0])
+        ellipticity = np.sqrt(eigenvalues[2] / eigenvalues[0])
     else:
         ellipticity = 0.0
     
@@ -404,9 +400,9 @@ def stellar_ellipticity(ds):
     eigenvalues = np.linalg.eigvalsh(I)
     eigenvalues = np.sort(eigenvalues)[::-1]  # Sort descending: a >= b >= c
     
-    # Calculate ellipticity (1 - c/a)
+    # Calculate ellipticity (c/a)
     if eigenvalues[0] > 0:
-        ellipticity = 1.0 - np.sqrt(eigenvalues[2] / eigenvalues[0])
+        ellipticity = np.sqrt(eigenvalues[2] / eigenvalues[0])
     else:
         ellipticity = 0.0
     
